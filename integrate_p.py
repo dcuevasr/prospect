@@ -1,9 +1,11 @@
 """ Trying to find out whether PT and actinf are compatible or something"""
 from itertools import product as prd
+import ipdb
 
 import numpy as np
 from scipy import stats
 import scipy as sp
+from matplotlib import pyplot as plt
 
 SD = 5
 MAX_X = 100
@@ -122,7 +124,7 @@ def heaviside(x):
     return (x >= 0) * 1
 
 
-def integrand_over_p(var_x, current_ixs, action):
+def dq_dp_p(var_x, current_ixs, action):
     """Like the other, but var."""
     norm = stats.norm.pdf
 
@@ -191,7 +193,7 @@ def _goals_gauss(shape_pars, x_range):
         np.logical_and(x <= x_range[1], x >= x_range[0]) / norm_const
 
 
-def integrand_over_fc(var_x, current_ixs, action, goals_fun):
+def dq_dp_fc(var_x, current_ixs, action, goals_fun):
     """Calculates dSdp * log(S)"""
     norm = stats.norm.pdf
 
@@ -204,18 +206,116 @@ def integrand_over_fc(var_x, current_ixs, action, goals_fun):
 
 
 def dq_dp(current_ixs, action, shape_pars, x_range):
-    """Calculates the final value for dQ/dp, for a range of values for
-    p given in --p_values--.
+    """Calculates the final value for dQ/dp, for the probability p given in
+    --action--.
     """
     goals = set_goals(shape_pars, x_range)
 
-    def integrand_with_p(x): return integrand_over_p(
-        x, current_ixs, action)
+    def integrand_with_p(val_x):
+        """Integrand function with given action."""
+        return dq_dp_p(val_x, current_ixs, action)
 
-    def integrand_with_fc(x): return integrand_over_fc(
-        x, current_ixs, action, goals)
+    def integrand_with_fc(val_x):
+        """Integrand function with given action."""
+        return dq_dp_fc(val_x, current_ixs, action, goals)
 
     int_fc = sp.integrate.quad(integrand_with_p, *x_range)[0]
     int_p = sp.integrate.quad(integrand_with_fc, *x_range)[0]
 
     return int_fc + int_p
+
+def current_state(var_x, action, current_ixs):
+    """Calculates the currently projected state S_\tau."""
+    return action[0] * this_gauss(var_x, current_ixs) + \
+        (1 - action[0]) * this_gauss(var_x, current_ixs + action[1])
+
+
+def dq_dmu_fun(var_x, current_ixs, action, goals_fun):
+    """Returns function for the integrand in dq_dmu."""
+    ds_dmu = - (1 - action[0]) * (var_x - current_ixs - action[1]) / \
+            np.sqrt(2 * np.pi) / SD * this_gauss(var_x,
+                                                 current_ixs + action[1])
+    c_state = current_state(var_x, action, current_ixs)
+    return ds_dmu * np.log(c_state) + ds_dmu - \
+        ds_dmu * np.log(goals_fun(var_x))
+
+
+def dq_dmu(current_ixs, action, shape_pars, x_range):
+    """Calculates the final value for dQ/d(value), the value of the reward
+    given in --action--.
+    """
+    goals = set_goals(shape_pars, x_range)
+
+    def integrand_fun(var_x):
+        """Integrand for integrating. Simple wrapper."""
+        return dq_dmu_fun(var_x, current_ixs, action, goals)
+
+    return  sp.integrate.quad(integrand_fun, *x_range)
+
+
+def loop_dq_dmu(actions=None, current_ixs=0, shape_pars=None, x_range=None,
+                fignum=1):
+    """Calculates and plots dq_dmu for the given actions.
+
+    Parameters
+    ----------
+    actions : 2D-ndarray
+    2D array whose rows are [probability, reward]. Defaults to all probs of
+    0.5 and rewards from 0 to 30.
+    """
+
+    if actions is None:
+        num_actions = 30
+        actions = np.hstack([0 * np.ones((num_actions, 1)),
+                             np.arange(num_actions).reshape((-1, 1))])
+    else:
+        num_actions = actions.shape[0]
+
+    results = np.inf * np.ones(num_actions)
+    for ix_action in range(num_actions):
+        results[ix_action] = dq_dmu(current_ixs, actions[ix_action, :],
+                                    shape_pars, x_range)[0]
+
+    fig = plt.figure(fignum)
+    fig.clear()
+    maax = fig.add_subplot(111)
+    maax.plot(actions[:, 1], results)
+    plt.draw()
+    plt.show(block=False)
+
+    return results
+
+def kld(p, q):
+    """Kullback-Leibler divergence between discrete --p-- and --q--."""
+    p = np.array(p)
+    q = np.array(q)
+    return (p * np.log(q / p)).sum()
+
+
+def integrate_kld(actions, current_ixs=0, shape_pars=None,
+                  x_range=None, fignum=2):
+    """calculates Q(action) for action in --actions--."""
+
+    if actions is None:
+        num_actions = 30
+        actions = np.hstack([0 * np.ones((num_actions, 1)),
+                             np.arange(num_actions).reshape((-1, 1))])
+    else:
+        num_actions = actions.shape[0]
+    
+    all_x = np.arange(*x_range, 0.01)
+    goals = set_goals(shape_pars, x_range)(all_x)
+
+    q_action = np.zeros(num_actions)
+    for ix_action, action in enumerate(actions):
+        c_state = current_state(all_x, action, current_ixs)
+        q_action[ix_action] = kld(c_state, goals)
+
+    plt.figure(fignum)
+    plt.clf()
+    plt.plot(q_action)
+    plt.draw()
+    plt.show(block=False)
+
+
+    
